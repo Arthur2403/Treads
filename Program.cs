@@ -9,14 +9,17 @@ namespace Treads
         private static Thread _fibonacciThread;
         private static CancellationTokenSource _primeCts;
         private static CancellationTokenSource _fibonacciCts;
+        private static ManualResetEvent _primePauseEvent = new ManualResetEvent(true);
+        private static ManualResetEvent _fibonacciPauseEvent = new ManualResetEvent(true);
+        private static readonly object consoleLock = new object();
 
         static void Main(string[] args)
         {
+            Console.OutputEncoding = System.Text.Encoding.UTF8;
+            Console.InputEncoding = System.Text.Encoding.UTF8;
+
             while (true)
             {
-                Console.OutputEncoding = System.Text.Encoding.UTF8;
-                Console.InputEncoding = System.Text.Encoding.UTF8;
-
                 Console.WriteLine("Введіть нижню межу для простих чисел (за замовчуванням 2) або 'exit' для завершення:");
                 string primeLowerInput = Console.ReadLine();
                 if (primeLowerInput.ToLower() == "exit") break;
@@ -75,62 +78,129 @@ namespace Treads
 
                 _primeCts = new CancellationTokenSource();
                 _fibonacciCts = new CancellationTokenSource();
-                _primeThread = new Thread(() => GeneratePrimes(primeLower, primeUpper, _primeCts.Token));
-                _fibonacciThread = new Thread(() => GenerateFibonacci(fibLower, fibUpper, _fibonacciCts.Token));
+                _primePauseEvent.Reset();
+                _fibonacciPauseEvent.Reset();
+                _primeThread = new Thread(() => GeneratePrimes(primeLower, primeUpper, _primeCts.Token, _primePauseEvent));
+                _fibonacciThread = new Thread(() => GenerateFibonacci(fibLower, fibUpper, _fibonacciCts.Token, _fibonacciPauseEvent));
                 _primeThread.Start();
                 _fibonacciThread.Start();
+                _primePauseEvent.Set();
+                _fibonacciPauseEvent.Set();
 
-                Console.WriteLine("Натисніть 'p' для зупинки простих чисел, 'f' для зупинки Фібоначчі, або Enter для зупинки обох:");
+                Console.WriteLine("Натисніть 'p' для зупинки простих чисел, 'P' для призупинення, 'r' для відновлення;");
+                Console.WriteLine("Натисніть 'f' для зупинки Фібоначчі, 'F' для призупинення, 'R' для відновлення;");
+                Console.WriteLine("або Enter для зупинки обох:");
+
                 while (_primeThread.IsAlive || _fibonacciThread.IsAlive)
                 {
-                    var key = Console.ReadKey(true).KeyChar;
-                    if (key == 'p' && _primeThread.IsAlive)
+                    if (Console.KeyAvailable)
                     {
-                        _primeCts.Cancel();
-                        _primeThread.Join();
-                        Console.WriteLine("Потік простих чисел зупинено.");
+                        char key;
+                        lock (consoleLock)//Я знаю що на цю домашню ще не вчили але без цього вести нічого не можна
+                        {
+                            key = Console.ReadKey(true).KeyChar;
+                        }
+                        if (key == 'p' && _primeThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _primeCts.Cancel();
+                                _primeThread.Join();
+                                Console.WriteLine("Потік простих чисел зупинено.");
+                            }
+                        }
+                        else if (key == 'P' && _primeThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _primePauseEvent.Reset();
+                                Console.WriteLine("Потік простих чисел призупинено.");
+                            }
+                        }
+                        else if (key == 'r' && _primeThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _primePauseEvent.Set();
+                                Console.WriteLine("Потік простих чисел відновлено.");
+                            }
+                        }
+                        else if (key == 'f' && _fibonacciThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _fibonacciCts.Cancel();
+                                _fibonacciThread.Join();
+                                Console.WriteLine("Потік чисел Фібоначчі зупинено.");
+                            }
+                        }
+                        else if (key == 'F' && _fibonacciThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _fibonacciPauseEvent.Reset();
+                                Console.WriteLine("Потік чисел Фібоначчі призупинено.");
+                            }
+                        }
+                        else if (key == 'R' && _fibonacciThread.IsAlive)
+                        {
+                            lock (consoleLock)
+                            {
+                                _fibonacciPauseEvent.Set();
+                                Console.WriteLine("Потік чисел Фібоначчі відновлено.");
+                            }
+                        }
+                        else if (key == (char)13)
+                        {
+                            lock (consoleLock)
+                            {
+                                _primeCts.Cancel();
+                                _fibonacciCts.Cancel();
+                                _primeThread.Join();
+                                _fibonacciThread.Join();
+                                Console.WriteLine("Обидва потоки зупинено.");
+                            }
+                            break;
+                        }
                     }
-                    else if (key == 'f' && _fibonacciThread.IsAlive)
+                    else
                     {
-                        _fibonacciCts.Cancel();
-                        _fibonacciThread.Join();
-                        Console.WriteLine("Потік чисел Фібоначчі зупинено.");
-                    }
-                    else if (key == (char)13)
-                    {
-                        _primeCts.Cancel();
-                        _fibonacciCts.Cancel();
-                        _primeThread.Join();
-                        _fibonacciThread.Join();
-                        Console.WriteLine("Обидва потоки зупинено.");
-                        break;
+                        Thread.Sleep(100);
                     }
                 }
             }
         }
 
-        static void GeneratePrimes(long lower, long? upper, CancellationToken token)
+        static void GeneratePrimes(long lower, long? upper, CancellationToken token, ManualResetEvent pauseEvent)
         {
             long current = lower;
             while (!token.IsCancellationRequested && (!upper.HasValue || current <= upper.Value))
             {
+                pauseEvent.WaitOne();
                 if (IsPrime(current))
                 {
-                    Console.WriteLine($"Prime: {current}");
+                    lock (consoleLock)
+                    {
+                        Console.WriteLine($"Prime: {current}");
+                    }
                     Thread.Sleep(1000);
                 }
                 current++;
             }
         }
 
-        static void GenerateFibonacci(long lower, long? upper, CancellationToken token)
+        static void GenerateFibonacci(long lower, long? upper, CancellationToken token, ManualResetEvent pauseEvent)
         {
             long a = 0, b = 1;
             while (!token.IsCancellationRequested && (!upper.HasValue || b <= upper.Value))
             {
+                pauseEvent.WaitOne();
                 if (b >= lower && IsFibonacci(b))
                 {
-                    Console.WriteLine($"Fibonacci: {b}");
+                    lock (consoleLock)
+                    {
+                        Console.WriteLine($"Fibonacci: {b}");
+                    }
                     Thread.Sleep(1000);
                 }
                 long temp = a + b;
